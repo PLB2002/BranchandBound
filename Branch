@@ -1,0 +1,98 @@
+    def branch_and_bound_follower(self, leader_radii):
+        "Berechnung der Follower Lösung nach dem Branch and Bound"
+        print("\n🔍 Starte Branch-and-Bound für den Follower... 🔍")
+        # Beste bisher gefundene Lösung (anfangs alle Radien 0)
+        best_solution = [0] * len(self.follower_sites)
+        #Bisher größter gefundener Marktanteil (anfangs 0)
+        best_market_share = 0
+        # Stack für Branch-and-Bound → Startzustand ist (best_solution, self.follower_budget)
+        stack = deque([(best_solution, self.follower_budget)])
+        #Alle Follower-Radien starten bei 0
+        follower_radii = [0] * len(self.follower_sites)
+
+        # V: Nutzenmatrix, die für jede Kombination von Budget h und Standort k speichert,
+        # welchen zusätzlichen Marktanteil der Follower erreichen kann.
+        V = np.zeros((int(self.follower_budget) + 1, len(self.follower_sites)))
+        # h (Budget) läuft von 0 bis follower_budget
+        for h in range(int(self.follower_budget) + 1):
+            # k (Standort-Index) läuft über alle Follower-Standorte.
+            for k in range(len(self.follower_sites)):
+                additional_market_share = 0
+                # Für jeden Nachfragepunkt wird getestet,
+                # ob der Follower den Punkt mit einer Budgeterhöhung erreichen könnte
+                # Falls ja, wird der zusätzliche Marktanteil berechnet
+                for i, (x_d, y_d, _) in enumerate(self.demand_points):
+                    cost_increase = self.follower_sites[k][3](leader_radii[k])
+                    if cost_increase <= h:
+                        additional_market_share += \
+                            self.market_share(leader_radii, self.update_follower_radii(follower_radii, k, h))[1]
+                V[h, k] = additional_market_share
+        # Berechnung Upper-Bound Matrix U, um die maximal erreichbaren Marktanteile in jedem Schritt zu bestimmen.
+        U = np.zeros_like(V)
+        # Von hinten nach vorne durchlaufen
+        for k in range(len(self.follower_sites) - 1, -1, -1):
+            for h in range(int(self.follower_budget) + 1):
+                # Falls es der letzte Standort ist, übernimmt U[h, k] einfach den Wert von V[h, k]
+                if k == len(self.follower_sites) - 1:
+                    U[h, k] = V[h, k]
+                # Sonst wird U[h, k] als maximaler erreichbarer Marktanteil
+                # aus V[h, k] + U[h - Kosten der Erhöhung] bestimmt.
+                else:
+                    U[h, k] = max(0, V[h, k] + U[int(max(0, h - self.follower_sites[k][3](leader_radii[k]))), k + 1])
+        # Start Branch and Bound: Solange es noch Zustände im Stack gibt, wird die Schleife ausgeführt.
+        while stack:
+            follower_radii, budget = stack.pop()
+            current_market_share = self.market_share(leader_radii, follower_radii)[1]
+            print("Aktuelle Marktanteil ", current_market_share)
+            print("Aktueller Radius ", follower_radii)
+
+            #Falls die aktuelle Lösung besser als die bisherige ist, wird sie gespeichert.
+            if current_market_share > best_market_share:
+                best_market_share = current_market_share
+                best_solution = follower_radii.copy()
+                print("Bessere Lösung!")
+
+            # Ermittlung aller möglichen Radien-Erhöhungen für Standort k.
+            # Die möglichen Radien werden aus den Distanzen zu den Nachfragepunkten berechnet.
+            # Aufgerundet (ceil), da nur ganzzahlige Radien möglich sind.
+            for k in range(len(self.follower_sites)):
+                possible_radii = sorted(set(int(np.ceil(
+                    self.euclidean_distance((self.follower_sites[k][0], self.follower_sites[k][1]), (x_d, y_d)))) for
+                                            x_d, y_d, _ in self.demand_points))
+                # Teste alle möglichen neuen Radien (new_radius) für Standort k
+                for new_radius in possible_radii:
+                    #Erhöhe den aktuellen Radius und berechne die Kosten
+                    cost_increase = self.follower_sites[k][3](new_radius) - self.follower_sites[k][3](follower_radii[k])
+                    # Falls die Kosten innerhalb des Budgets liegen, wird:
+                    # Ein neuer Radii-Zustand (new_radii) erstellt.
+                    # Der neue Marktanteil (new_ms) berechnet.
+                    # Falls der neue Marktanteil besser als der aktuelle ist, wird der neue Zustand in den Stack gelegt.
+                    if cost_increase > 0 and cost_increase <= budget:
+                        new_radii = follower_radii.copy()
+                        new_radii[k] = new_radius
+                        new_ms = self.market_share(leader_radii, new_radii)[1]
+                        # U ist die Upper-Bound-Matrix, die vorher berechnet wurde.
+                        # Sie enthält für jedes Budget und jeden Standort eine Schätzung des maximal möglichen Marktanteils,
+                        # den man durch zusätzliche Investitionen noch erreichen könnte.
+                        # budget - cost_increase: Das noch verfügbare Budget nach der Erhöhung des Radius.
+                        # U[int(budget - cost_increase), k]: Der maximale zusätzliche Marktanteil, den der Follower noch gewinnen kann,
+                        # wenn er den verbleibenden Standorten Geld zuweist.
+                        # Falls k der letzte Standort ist (k == len(self.follower_sites) - 1), dann gibt es keinen weiteren Standort, den man noch erweitern kann.
+                        # In diesem Fall ist der upper_bound einfach new_ms, weil keine weiteren Verbesserungen mehr möglich sind.
+                        upper_bound = new_ms + U[int(budget - cost_increase), k] if k < len(self.follower_sites) - 1 else new_ms
+                        # Falls der berechnete Upper Bound größer als der bisher beste gefundene Marktanteil ist,
+                        # dann lohnt es sich, weiter in dieser Richtung zu suchen.
+                        # In diesem Fall wird die neue Konfiguration new_radii zusammen mit dem verbleibenden Budget budget
+                        # - cost_increase in den Stack aufgenommen.
+                        # Das bedeutet, dass dieser Zweig später weiter untersucht wird, da er eine vielversprechende Lösung enthalten könnte.
+                        if upper_bound > best_market_share:
+                            stack.append((new_radii, budget - cost_increase))
+
+
+        leader_ms = self.market_share(leader_radii, best_solution)[0]
+        print("\n✅ Branch-and-Bound für den Follower abgeschlossen! ✅")
+        print(f"📏 Endgültige Follower-Radien: {best_solution}")
+        print(f"📊 Marktanteil des Followers: {best_market_share:.2f}")
+        print(f"📊 Marktanteil des Leaders nach Branch-and-Bound: {leader_ms:.2f}")
+        print(f"💰 Verbleibendes Budget des Followers: {budget}")
+        return best_solution
